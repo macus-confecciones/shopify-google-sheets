@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { verifyShopifyWebhook } from "@/lib/shopify";
 import { appendRows } from "@/lib/google-sheets";
+import { getVariantMapping } from "@/config/product-variants";
 
 interface LineItem {
   title: string;
@@ -45,15 +46,24 @@ function parseLineItem(
   const prenda = titleParts[0].trim();
   const manga = titleParts.length > 1 ? titleParts.slice(1).join(" - ").trim() : "";
 
-  // variant_title format: "Genero / Color / Talla"
+  // Extract variants using config-based mapping
   let genero = "";
   let color = "";
   let talla = "";
+
   if (item.variant_title) {
+    const mapping = getVariantMapping(prenda);
     const options = item.variant_title.split(" / ");
-    genero = options[0]?.trim() || "";
-    color = options[1]?.trim() || "";
-    talla = options[2]?.trim() || "";
+
+    if (mapping.genero !== undefined) {
+      genero = options[mapping.genero]?.trim() || "";
+    }
+    if (mapping.color !== undefined) {
+      color = options[mapping.color]?.trim() || "";
+    }
+    if (mapping.talla !== undefined) {
+      talla = options[mapping.talla]?.trim() || "";
+    }
   }
 
   return [
@@ -69,27 +79,43 @@ function parseLineItem(
 }
 
 export async function POST(request: Request) {
-  const secret = process.env.SHOPIFY_WEBHOOK_SECRET;
-  if (!secret) {
+  try {
+    const secret = process.env.SHOPIFY_WEBHOOK_SECRET;
+    if (!secret) {
+      console.error("SHOPIFY_WEBHOOK_SECRET not configured");
+      return NextResponse.json(
+        { error: "Webhook secret not configured" },
+        { status: 500 }
+      );
+    }
+
+    // Read raw body for HMAC verification
+    const rawBody = Buffer.from(await request.arrayBuffer());
+    const hmac = request.headers.get("x-shopify-hmac-sha256");
+
+    if (!hmac || !verifyShopifyWebhook(rawBody, hmac, secret)) {
+      console.warn("Webhook signature verification failed");
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const order: ShopifyOrder = JSON.parse(rawBody.toString("utf-8"));
+
+    const rows = order.line_items.map((item) => parseLineItem(order, item));
+
+    console.log(`Processing order ${order.order_number} with ${rows.length} line items`);
+
+    await appendRows(rows);
+
+    console.log(`Successfully appended ${rows.length} rows for order ${order.order_number}`);
+
+    return NextResponse.json({ success: true, rowsAppended: rows.length });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error("Webhook processing failed:", errorMessage);
+
     return NextResponse.json(
-      { error: "Webhook secret not configured" },
+      { error: "Failed to process webhook", details: errorMessage },
       { status: 500 }
     );
   }
-
-  // Read raw body for HMAC verification
-  const rawBody = Buffer.from(await request.arrayBuffer());
-  const hmac = request.headers.get("x-shopify-hmac-sha256");
-
-  if (!hmac || !verifyShopifyWebhook(rawBody, hmac, secret)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  const order: ShopifyOrder = JSON.parse(rawBody.toString("utf-8"));
-
-  const rows = order.line_items.map((item) => parseLineItem(order, item));
-
-  await appendRows(rows);
-
-  return NextResponse.json({ success: true, rowsAppended: rows.length });
 }
