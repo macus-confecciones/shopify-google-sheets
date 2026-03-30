@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { verifyShopifyWebhook } from "@/lib/shopify";
 import { appendRows } from "@/lib/google-sheets";
-import { getVariantMapping } from "@/config/product-variants";
+import { detectVariantPositions } from "@/lib/variant-detector";
 
 interface LineItem {
   title: string;
@@ -46,23 +46,23 @@ function parseLineItem(
   const prenda = titleParts[0].trim();
   const manga = titleParts.length > 1 ? titleParts.slice(1).join(" - ").trim() : "";
 
-  // Extract variants using config-based mapping
+  // Auto-detect and extract variants
   let genero = "";
   let color = "";
   let talla = "";
 
   if (item.variant_title) {
-    const mapping = getVariantMapping(prenda);
+    const positions = detectVariantPositions(item.variant_title);
     const options = item.variant_title.split(" / ");
 
-    if (mapping.genero !== undefined) {
-      genero = options[mapping.genero]?.trim() || "";
+    if (positions.genero !== undefined) {
+      genero = options[positions.genero]?.trim() || "";
     }
-    if (mapping.color !== undefined) {
-      color = options[mapping.color]?.trim() || "";
+    if (positions.color !== undefined) {
+      color = options[positions.color]?.trim() || "";
     }
-    if (mapping.talla !== undefined) {
-      talla = options[mapping.talla]?.trim() || "";
+    if (positions.talla !== undefined) {
+      talla = options[positions.talla]?.trim() || "";
     }
   }
 
